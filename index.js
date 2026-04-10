@@ -425,7 +425,7 @@ function cleanTitle(name) {
 
 function buildSeoDescription(description) {
   if (!description) return '';
-  const strip = t => t.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  const strip = t => t.replace(/<sup[^>]*>.*?<\/sup>/gi, '').replace(/<[^>]*>/g, '').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
   const heading = description.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/is)?.[1];
   const firstP = description.match(/<p[^>]*>(.*?)<\/p>/is)?.[1];
   const parts = [];
