@@ -11,7 +11,9 @@
     "smart": "node index.js --smart-variants",
     "smart:dry": "node index.js --smart-variants --dry-run",
     "init": "node index.js --init",
-    "full": "node index.js --smart-variants --brand-collections"
+    "full": "node index.js --smart-variants --brand-collections",
+    "cleanup": "node cleanup.js",
+    "export": "node index.js --smart-variants --brand-collections && node cleanup.js"
   },
   "keywords": [
     "woocommerce",
