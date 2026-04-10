@@ -29,6 +29,7 @@ const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
 const shouldDownloadImages = args.includes('--images');
 const smartVariants = args.includes('--smart-variants');
+const brandCollections = args.includes('--brand-collections');
 const isInit = args.includes('--init');
 const storeBase = WC_STORE_URL.replace(/\/+$/, '');
 const apiBase = storeBase + '/wp-json/wc/v3';
@@ -577,6 +578,13 @@ function writeImageRows(writer, handle, images) {
   }
 }
 
+function writeBrandCollectionRow(writer, handle, brandName) {
+  const row = emptyRow();
+  row['Handle'] = handle;
+  row['Collection'] = brandName;
+  writer.write(row);
+}
+
 // --- Main ---
 
 async function main() {
@@ -596,6 +604,7 @@ async function main() {
   console.log(`Output: ${OUTPUT_FILE}`);
   if (mappingStatus.length) console.log(`Maps:   ${mappingStatus.join(', ')}`);
   if (smartVariants) console.log(`Mode:   Smart variant grouping enabled`);
+  if (brandCollections) console.log(`Mode:   Brand collections enabled`);
   if (shouldDownloadImages) console.log(`Images: ./${IMAGE_DIR}/`);
   console.log('');
 
@@ -707,6 +716,14 @@ async function main() {
     if (allImages.length > 1) {
       writeImageRows(writer, handle, allImages);
     }
+
+    // Brand collection row
+    if (brandCollections) {
+      const brand = mapBrand(group.baseName);
+      if (brand && brand !== SHOPIFY_VENDOR) {
+        writeBrandCollectionRow(writer, handle, brand);
+      }
+    }
   }
 
   // Write remaining products
@@ -740,6 +757,14 @@ async function main() {
     if (product.images && product.images.length > 1) {
       writeImageRows(writer, handle, product.images);
     }
+
+    // Brand collection row
+    if (brandCollections) {
+      const brand = mapBrand(product.name);
+      if (brand && brand !== SHOPIFY_VENDOR) {
+        writeBrandCollectionRow(writer, handle, brand);
+      }
+    }
   }
 
   writer.end();
@@ -749,6 +774,14 @@ async function main() {
   }
   console.log(`  Simple:   ${simpleCount}`);
   console.log(`  Variable: ${variableCount} (${variantCount} WC variants)`);
+  if (brandCollections) {
+    const brandSet = new Set();
+    for (const p of products) {
+      const b = mapBrand(p.name);
+      if (b && b !== SHOPIFY_VENDOR) brandSet.add(b);
+    }
+    console.log(`  Brand collections: ${brandSet.size} (${[...brandSet].join(', ')})`);
+  }
 
   if (shouldDownloadImages) {
     console.log('\nDownloading images...');

@@ -10,7 +10,8 @@
     "images": "node index.js --images",
     "smart": "node index.js --smart-variants",
     "smart:dry": "node index.js --smart-variants --dry-run",
-    "init": "node index.js --init"
+    "init": "node index.js --init",
+    "full": "node index.js --smart-variants --brand-collections"
   },
   "keywords": [
     "woocommerce",
