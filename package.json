@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "dry-run": "node index.js --dry-run",
-    "images": "node index.js --images"
+    "images": "node index.js --images",
+    "smart": "node index.js --smart-variants",
+    "smart:dry": "node index.js --smart-variants --dry-run"
   },
   "keywords": [
     "woocommerce",

@@ -27,6 +27,7 @@ if (!WC_STORE_URL || !WC_CONSUMER_KEY || !WC_CONSUMER_SECRET) {
 const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
 const shouldDownloadImages = args.includes('--images');
+const smartVariants = args.includes('--smart-variants');
 const storeBase = WC_STORE_URL.replace(/\/+$/, '');
 const apiBase = storeBase + '/wp-json/wc/v3';
 const perPage = 100;
@@ -116,6 +117,96 @@ async function fetchVariations(productId) {
   }
 
   return variations;
+}
+
+// --- Smart variant grouping ---
+
+const COLOR_WORDS = new Set([
+  'white', 'black', 'oak', 'blue', 'mocha', 'red', 'grey', 'gray', 'silver',
+  'gold', 'green', 'brown', 'cream', 'walnut', 'midnight', 'graphite', 'carbon',
+  'sand', 'smoke', 'charcoal', 'navy', 'ivory', 'beige', 'bronze', 'copper',
+  'platinum', 'rose', 'matte', 'satin', 'datuk', 'crimson', 'ebony', 'mahogany',
+  'cherry', 'olive', 'teal', 'pink', 'orange', 'yellow', 'purple', 'violet',
+  'indigo', 'maroon', 'burgundy', 'aqua', 'turquoise', 'coral', 'peach',
+  'gloss black', 'matte black', 'matte white',
+]);
+
+function extractVariantInfo(name) {
+  // Try parenthesized color: "Product Name (White) (Pair)" or "Product Name (Gloss Black)(pair)"
+  // Match a parenthesized group whose content is a known color, ignoring case
+  const parenRegex = /\(([^)]+)\)/g;
+  let match;
+  let colorMatch = null;
+  let colorStart = -1;
+  let colorEnd = -1;
+
+  while ((match = parenRegex.exec(name)) !== null) {
+    const inner = match[1].trim();
+    if (COLOR_WORDS.has(inner.toLowerCase())) {
+      colorMatch = inner;
+      colorStart = match.index;
+      colorEnd = match.index + match[0].length;
+      break;
+    }
+  }
+
+  if (colorMatch) {
+    const baseName = (name.slice(0, colorStart) + name.slice(colorEnd)).replace(/\s+/g, ' ').trim();
+    return { baseName, variantValue: colorMatch };
+  }
+
+  // Try trailing color word: "Product Name White"
+  const words = name.split(/\s+/);
+  if (words.length >= 2) {
+    const lastWord = words[words.length - 1];
+    if (COLOR_WORDS.has(lastWord.toLowerCase())) {
+      return { baseName: words.slice(0, -1).join(' '), variantValue: lastWord };
+    }
+    // Try last two words: "Gloss Black"
+    if (words.length >= 3) {
+      const lastTwo = words.slice(-2).join(' ');
+      if (COLOR_WORDS.has(lastTwo.toLowerCase())) {
+        return { baseName: words.slice(0, -2).join(' '), variantValue: lastTwo };
+      }
+    }
+  }
+
+  return null;
+}
+
+function groupSmartVariants(products) {
+  const groups = new Map();
+  const ungrouped = [];
+
+  for (const product of products) {
+    if (product.type !== 'simple') {
+      ungrouped.push(product);
+      continue;
+    }
+
+    const info = extractVariantInfo(product.name);
+    if (info) {
+      const key = info.baseName.toLowerCase();
+      if (!groups.has(key)) {
+        groups.set(key, { baseName: info.baseName, products: [] });
+      }
+      groups.get(key).products.push({ product, variantValue: info.variantValue });
+    } else {
+      ungrouped.push(product);
+    }
+  }
+
+  // Only keep groups with 2+ products — singles go back to ungrouped
+  const mergedGroups = [];
+  for (const [, group] of groups) {
+    if (group.products.length >= 2) {
+      mergedGroups.push(group);
+    } else {
+      ungrouped.push(group.products[0].product);
+    }
+  }
+
+  return { mergedGroups, ungrouped };
 }
 
 // --- Image downloading ---
@@ -250,8 +341,69 @@ function buildProductRow(product, variant, isFirstRow) {
   return row;
 }
 
+function buildSmartVariantRow(group, memberProduct, variantValue, isFirstRow) {
+  const handle = makeHandle(group.baseName);
+  const category = memberProduct.categories?.[0]?.name || '';
+
+  const row = emptyRow();
+  row['Handle'] = handle;
+
+  if (isFirstRow) {
+    // Use group base name as the product title
+    row['Title'] = group.baseName;
+    // Pick the longest description from all members
+    const best = group.products.reduce((a, b) =>
+      (b.product.description || '').length > (a.product.description || '').length ? b : a
+    );
+    row['Body (HTML)'] = best.product.description || '';
+    row['Vendor'] = SHOPIFY_VENDOR;
+    row['Product Category'] = mapCategory(category);
+    row['Type'] = category;
+    // Merge tags from all members
+    const allTags = [...new Set(group.products.flatMap(m => (m.product.tags || []).map(t => t.name)))];
+    row['Tags'] = allTags.join(', ');
+    row['Published'] = group.products.some(m => m.product.status === 'publish') ? 'TRUE' : 'FALSE';
+    row['Gift Card'] = 'FALSE';
+    row['SEO Title'] = group.baseName;
+    const bestShort = group.products.reduce((a, b) =>
+      (b.product.short_description || '').length > (a.product.short_description || '').length ? b : a
+    );
+    row['SEO Description'] = bestShort.product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
+    row['Status'] = group.products.some(m => m.product.status === 'publish') ? 'active' : 'draft';
+    row['Collection'] = category;
+  }
+
+  // Variant fields
+  row['Option1 Name'] = 'Color';
+  row['Option1 Value'] = variantValue;
+  row['Variant SKU'] = memberProduct.sku || '';
+  row['Variant Grams'] = memberProduct.weight ? Math.round(parseFloat(memberProduct.weight) * 1000) : '';
+  row['Variant Inventory Tracker'] = 'shopify';
+  row['Variant Inventory Qty'] = memberProduct.stock_quantity ?? '';
+  row['Variant Inventory Policy'] = memberProduct.backorders === 'no' ? 'deny' : 'continue';
+  row['Variant Fulfillment Service'] = 'manual';
+  row['Variant Price'] = memberProduct.price || '';
+  row['Variant Compare At Price'] = (memberProduct.regular_price && memberProduct.sale_price && memberProduct.regular_price !== memberProduct.sale_price) ? memberProduct.regular_price : '';
+  row['Variant Requires Shipping'] = 'TRUE';
+  row['Variant Taxable'] = memberProduct.tax_status === 'taxable' ? 'TRUE' : 'FALSE';
+  row['Variant Weight Unit'] = memberProduct.weight ? 'g' : '';
+
+  // Variant image — use the member product's first image
+  if (memberProduct.images?.[0]?.src) {
+    row['Variant Image'] = memberProduct.images[0].src;
+  }
+
+  // First image on first row
+  if (isFirstRow && memberProduct.images?.[0]) {
+    row['Image Src'] = memberProduct.images[0].src;
+    row['Image Position'] = '1';
+    row['Image Alt Text'] = memberProduct.images[0].alt || '';
+  }
+
+  return row;
+}
+
 function writeImageRows(writer, handle, images) {
-  // Additional images (index 1+) get their own rows
   for (let i = 1; i < images.length; i++) {
     const row = emptyRow();
     row['Handle'] = handle;
@@ -268,6 +420,7 @@ async function main() {
   console.log(`\nShopMigrate - WooCommerce to Shopify`);
   console.log(`Store:  ${WC_STORE_URL}`);
   console.log(`Output: ${OUTPUT_FILE}`);
+  if (smartVariants) console.log(`Mode:   Smart variant grouping enabled`);
   if (shouldDownloadImages) console.log(`Images: ./${IMAGE_DIR}/`);
   console.log('');
 
@@ -278,7 +431,7 @@ async function main() {
 
   if (products.length === 0) return;
 
-  // Fetch variations for variable products
+  // Fetch variations for WooCommerce variable products
   const variableProducts = products.filter(p => p.type === 'variable');
   const variationMap = new Map();
 
@@ -293,19 +446,44 @@ async function main() {
     console.log('');
   }
 
-  if (isDryRun) {
-    const totalVariants = [...variationMap.values()].reduce((sum, v) => sum + v.length, 0);
-    console.log(`[Dry run] ${products.length} products, ${variableProducts.length} variable, ${totalVariants} total variants`);
-    console.log('No files written.\n');
+  // Smart variant grouping
+  let mergedGroups = [];
+  let processProducts = products;
 
-    if (products[0]) {
-      console.log('Sample row:', JSON.stringify(buildProductRow(products[0], null, true), null, 2));
+  if (smartVariants) {
+    const result = groupSmartVariants(products);
+    mergedGroups = result.mergedGroups;
+    processProducts = result.ungrouped;
+
+    if (mergedGroups.length > 0) {
+      console.log(`Smart variants: grouped ${mergedGroups.reduce((s, g) => s + g.products.length, 0)} simple products into ${mergedGroups.length} variant products:\n`);
+      for (const group of mergedGroups) {
+        console.log(`  [grouped]  ${group.baseName} — ${group.products.length} variants`);
+        for (const member of group.products) {
+          console.log(`    ${member.variantValue} | ${member.product.price || 'no price'} | SKU: ${member.product.sku || 'none'}`);
+        }
+      }
+      console.log('');
+    } else {
+      console.log('Smart variants: no groupable products found.\n');
     }
+  }
+
+  if (isDryRun) {
+    const totalWcVariants = [...variationMap.values()].reduce((sum, v) => sum + v.length, 0);
+    const smartGrouped = mergedGroups.reduce((s, g) => s + g.products.length, 0);
+    console.log(`[Dry run] ${products.length} products total`);
+    console.log(`  WooCommerce variable: ${variableProducts.length} (${totalWcVariants} variants)`);
+    if (smartVariants) {
+      console.log(`  Smart-grouped: ${mergedGroups.length} products (${smartGrouped} merged simple products)`);
+      console.log(`  Remaining simple: ${processProducts.filter(p => p.type === 'simple').length}`);
+    }
+    console.log('No files written.\n');
 
     // Show unmapped categories
     const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !(c in categoryMap));
     if (unmapped.length) {
-      console.log(`\nUnmapped categories (add to ${CATEGORY_MAP_FILE}):`);
+      console.log(`Unmapped categories (add to ${CATEGORY_MAP_FILE}):`);
       unmapped.forEach(c => console.log(`  "${c}": ""`));
     }
     return;
@@ -319,8 +497,39 @@ async function main() {
   let simpleCount = 0;
   let variableCount = 0;
   let variantCount = 0;
+  let smartGroupCount = mergedGroups.length;
+  let smartVariantCount = 0;
 
-  for (const product of products) {
+  // Write smart-grouped products first
+  for (const group of mergedGroups) {
+    const handle = makeHandle(group.baseName);
+    smartVariantCount += group.products.length;
+    console.log(`  [grouped]  ${group.baseName} — ${group.products.length} variants`);
+
+    group.products.forEach((member, i) => {
+      console.log(`    ${member.variantValue} | ${member.product.price || 'no price'} | SKU: ${member.product.sku || 'none'}`);
+      writer.write(buildSmartVariantRow(group, member.product, member.variantValue, i === 0));
+      rowCount++;
+    });
+
+    // Collect all unique images across group members for additional image rows
+    const allImages = [];
+    const seenUrls = new Set();
+    for (const member of group.products) {
+      for (const img of (member.product.images || [])) {
+        if (img.src && !seenUrls.has(img.src)) {
+          seenUrls.add(img.src);
+          allImages.push(img);
+        }
+      }
+    }
+    if (allImages.length > 1) {
+      writeImageRows(writer, handle, allImages);
+    }
+  }
+
+  // Write remaining products
+  for (const product of processProducts) {
     const handle = makeHandle(product.name);
     const variations = variationMap.get(product.id);
 
@@ -341,16 +550,18 @@ async function main() {
       rowCount++;
     }
 
-    // Additional image rows
     if (product.images && product.images.length > 1) {
       writeImageRows(writer, handle, product.images);
     }
   }
 
   writer.end();
-  console.log(`\nExported ${products.length} products (${rowCount} rows) to ${OUTPUT_FILE}`);
+  console.log(`\nExported to ${OUTPUT_FILE} (${rowCount} rows)`);
+  if (smartGroupCount > 0) {
+    console.log(`  Smart-grouped: ${smartGroupCount} products (${smartVariantCount} color variants)`);
+  }
   console.log(`  Simple:   ${simpleCount}`);
-  console.log(`  Variable: ${variableCount} (${variantCount} total variants)`);
+  console.log(`  Variable: ${variableCount} (${variantCount} WC variants)`);
 
   // Download images
   if (shouldDownloadImages) {

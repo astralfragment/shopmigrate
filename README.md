@@ -1,16 +1,17 @@
 # ShopMigrate
 
-CLI tool that exports products from a WooCommerce store into a Shopify-compatible CSV, handling variants, multiple images, and category mapping.
+CLI tool that exports products from a WooCommerce store into a Shopify-compatible CSV, with smart variant grouping, image downloads, and category mapping.
 
 ## Features
 
 - Fetches all products via WooCommerce REST API with automatic pagination
-- Fetches and maps **product variants** (size, color, etc.) to Shopify's Option/Variant columns
+- Fetches and maps **WooCommerce variable product variants** to Shopify's Option/Variant columns
+- **Smart variant grouping** (`--smart-variants`) — detects simple products that are actually color/finish variants of the same product and merges them into a single Shopify product with variants
 - Maps WooCommerce categories to **valid Shopify Product Taxonomy** values via `categories.json`
 - Handles **multiple product images** (additional images become separate CSV rows per Shopify spec)
 - **Downloads all product images** locally with `--images` flag
 - Exports inventory, pricing, compare-at prices, SEO, tags, and publish status
-- **Dry run** mode to preview without writing files + see unmapped categories
+- **Dry run** mode to preview without writing files
 
 ## Setup
 
@@ -34,50 +35,75 @@ IMAGE_DIR=images
 
 Generate WooCommerce API keys at **WP Admin > WooCommerce > Settings > Advanced > REST API** (read-only access is fine).
 
+## Usage
+
+```bash
+# Basic export
+npm start
+
+# Smart variant grouping (recommended)
+npm run smart
+
+# Preview smart grouping without writing files
+npm run smart:dry
+
+# Dry run
+npm run dry-run
+
+# Export + download all product images
+npm run images
+
+# Combine flags
+node index.js --smart-variants --images
+```
+
+## Smart Variant Grouping
+
+Many WooCommerce stores list color/finish variants as separate simple products:
+
+```
+B+W 607 S3 Bookshelf (White) (Pair)   → simple product
+B+W 607 S3 Bookshelf (Oak) (Pair)     → simple product
+B+W 607 S3 Bookshelf (Black) (Pair)   → simple product
+```
+
+With `--smart-variants`, these get merged into **one Shopify product** with 3 color variants:
+
+```
+B+W 607 S3 Bookshelf (Pair)
+  ├── White  | SKU: FP43966pr
+  ├── Oak    | SKU: FP43974pr
+  └── Black  | SKU: FP43958pr
+```
+
+It detects colors in parentheses like `(White)` or as trailing words like `Floorstander Oak`. Only groups with 2+ matching products are merged — single products are left as-is.
+
+Run `npm run smart:dry` first to preview what will be grouped before exporting.
+
 ## Category Mapping
 
-WooCommerce categories don't match Shopify's product taxonomy. Edit `categories.json` to map your store's categories:
+WooCommerce categories don't match Shopify's product taxonomy. Edit `categories.json` to map your store's categories to exact Shopify taxonomy strings:
 
 ```json
 {
-  "Smart Home": "Electronics > Smart Home & Security > Smart Home Hubs",
-  "Lighting": "Home & Garden > Lighting & Light Fixtures",
+  "Audio": "Electronics > Audio",
+  "Speakers": "Electronics > Audio > Audio Components > Speakers",
+  "Security": "Home & Garden > Business & Home Security",
   "Uncategorized": ""
 }
 ```
 
-Run `npm run dry-run` to see which categories still need mapping. Browse valid Shopify categories at [shopify.github.io/product-taxonomy](https://shopify.github.io/product-taxonomy/).
+Set a category to `""` to intentionally leave it unmapped. Run `npm run dry-run` to see categories that are missing from the file entirely. Browse valid values at [shopify.github.io/product-taxonomy](https://shopify.github.io/product-taxonomy/).
 
-## Usage
-
-```bash
-# Export products + variants to CSV
-npm start
-
-# Dry run — test connection, preview output, show unmapped categories
-npm run dry-run
-
-# Export CSV and download all product images
-npm run images
-```
-
-You can combine flags:
-
-```bash
-node index.js --images --dry-run
-```
-
-## How Variants Work
-
-WooCommerce "variable" products are exported as multiple CSV rows:
+## How Variants Work in the CSV
 
 | Row | What it contains |
 |-----|-----------------|
 | 1st | Full product info (title, description, tags, etc.) + first variant's options/price/SKU |
-| 2nd+ | Handle + each additional variant's options, price, SKU, inventory, image |
+| 2nd+ | Handle + each additional variant's options, price, SKU, inventory, variant image |
 | Extra | Additional product images (one row per image) |
 
-Simple products get a single row with all fields.
+This applies to both WooCommerce variable products and smart-grouped products.
 
 ## Importing into Shopify
 
@@ -85,7 +111,8 @@ Simple products get a single row with all fields.
 2. Upload `products_shopify.csv`
 3. Review the column mapping preview
 4. Click **Import products**
-5. If you used `--images`, the CSV still references the original WooCommerce URLs — Shopify will download them during import
+
+The CSV references original WooCommerce image URLs — Shopify downloads them during import.
 
 ## Requirements
 
