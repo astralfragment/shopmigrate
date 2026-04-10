@@ -316,19 +316,27 @@ async function main() {
   writer.pipe(fs.createWriteStream(OUTPUT_FILE));
 
   let rowCount = 0;
+  let simpleCount = 0;
+  let variableCount = 0;
+  let variantCount = 0;
 
   for (const product of products) {
     const handle = makeHandle(product.name);
     const variations = variationMap.get(product.id);
 
     if (variations && variations.length > 0) {
-      // Variable product: one row per variation
+      variableCount++;
+      variantCount += variations.length;
+      console.log(`  [variable] ${product.name} — ${variations.length} variants`);
       variations.forEach((variant, i) => {
+        const attrs = (variant.attributes || []).map(a => `${a.name}: ${a.option}`).join(', ');
+        console.log(`    variant ${i + 1}: ${attrs || 'default'} | ${variant.price || 'no price'} | SKU: ${variant.sku || 'none'}`);
         writer.write(buildProductRow(product, variant, i === 0));
         rowCount++;
       });
     } else {
-      // Simple product: single row
+      simpleCount++;
+      console.log(`  [simple]   ${product.name} | ${product.price || 'no price'} | SKU: ${product.sku || 'none'}`);
       writer.write(buildProductRow(product, null, true));
       rowCount++;
     }
@@ -340,7 +348,9 @@ async function main() {
   }
 
   writer.end();
-  console.log(`Exported ${products.length} products (${rowCount} rows) to ${OUTPUT_FILE}`);
+  console.log(`\nExported ${products.length} products (${rowCount} rows) to ${OUTPUT_FILE}`);
+  console.log(`  Simple:   ${simpleCount}`);
+  console.log(`  Variable: ${variableCount} (${variantCount} total variants)`);
 
   // Download images
   if (shouldDownloadImages) {
