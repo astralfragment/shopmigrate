@@ -423,6 +423,24 @@ function cleanTitle(name) {
   return info ? info.baseName : name;
 }
 
+function buildSeoDescription(description) {
+  if (!description) return '';
+  const strip = t => t.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  const heading = description.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/is)?.[1];
+  const firstP = description.match(/<p[^>]*>(.*?)<\/p>/is)?.[1];
+  const parts = [];
+  if (heading) {
+    let h = strip(heading);
+    if (h.endsWith('.')) h = h.slice(0, -1);
+    parts.push(h);
+  }
+  if (firstP) {
+    const cleaned = strip(firstP);
+    if (cleaned.length > 10) parts.push(cleaned);
+  }
+  return parts.join('. ').slice(0, 320);
+}
+
 function makeHandle(name) {
   return name?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || '';
 }
@@ -451,7 +469,7 @@ function buildProductRow(product, variant, isFirstRow) {
     row['Published'] = product.status === 'publish' ? 'TRUE' : 'FALSE';
     row['Gift Card'] = 'FALSE';
     row['SEO Title'] = title;
-    row['SEO Description'] = product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
+    row['SEO Description'] = buildSeoDescription(product.description);
     row['Status'] = product.status === 'publish' ? 'active' : 'draft';
     row['Collection'] = mapCollection(category);
   }
@@ -530,10 +548,10 @@ function buildSmartVariantRow(group, memberProduct, variantValue, isFirstRow) {
     row['Published'] = group.products.some(m => m.product.status === 'publish') ? 'TRUE' : 'FALSE';
     row['Gift Card'] = 'FALSE';
     row['SEO Title'] = group.baseName;
-    const bestShort = group.products.reduce((a, b) =>
-      (b.product.short_description || '').length > (a.product.short_description || '').length ? b : a
+    const bestDesc = group.products.reduce((a, b) =>
+      (b.product.description || '').length > (a.product.description || '').length ? b : a
     );
-    row['SEO Description'] = bestShort.product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
+    row['SEO Description'] = buildSeoDescription(bestDesc.product.description);
     row['Status'] = group.products.some(m => m.product.status === 'publish') ? 'active' : 'draft';
     row['Collection'] = mapCollection(category);
   }

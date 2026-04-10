@@ -122,26 +122,32 @@ function extractSpecs(html) {
 function cleanHtml(html) {
   if (!html) return '';
 
-  // Remove empty divs and spans with only attributes (no text)
   let clean = html;
+
+  // Convert h1-h6 to bold text
+  clean = clean.replace(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/gis, '<p><strong>$1</strong></p>');
 
   // Strip all attributes except href and src
   clean = clean.replace(/<(\w+)\s+[^>]*?((?:href|src)="[^"]*")[^>]*>/gi, '<$1 $2>');
   clean = clean.replace(/<(\w+)\s+(?:class|data-[a-z-]+|id|style|nowrap)="[^"]*"\s*>/gi, '<$1>');
   clean = stripAttributes(clean);
 
-  // Remove empty elements
-  clean = clean.replace(/<(div|span|section|p)\s*>\s*<\/\1>/gi, '');
-  // Repeat for nested empties
-  clean = clean.replace(/<(div|span|section|p)\s*>\s*<\/\1>/gi, '');
-  clean = clean.replace(/<(div|span|section|p)\s*>\s*<\/\1>/gi, '');
+  // Remove sup tags (footnote references)
+  clean = clean.replace(/<sup[^>]*>.*?<\/sup>/gi, '');
+
+  // Remove empty elements (repeat to catch nested)
+  for (let j = 0; j < 3; j++) {
+    clean = clean.replace(/<(div|span|section|p)\s*>\s*<\/\1>/gi, '');
+  }
 
   // Remove product feature container divs but keep their text content
   clean = clean.replace(/<div[^>]*>\s*<p>([^<]+)<\/p>\s*<\/div>/gi, '<li>$1</li>');
 
-  // Convert remaining divs to semantic elements where possible
-  clean = clean.replace(/<div>/g, '').replace(/<\/div>/g, '');
-  clean = clean.replace(/<section>/g, '').replace(/<\/section>/g, '');
+  // Strip divs, sections, spans (keep content)
+  clean = clean.replace(/<\/?(div|section|span)[^>]*>/gi, '');
+
+  // Remove &nbsp;
+  clean = clean.replace(/&nbsp;/g, ' ');
 
   // Clean up whitespace
   clean = clean.replace(/\n\s*\n\s*\n/g, '\n\n');
