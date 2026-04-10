@@ -726,7 +726,13 @@ async function main() {
       });
     } else {
       simpleCount++;
-      console.log(`  [simple]   ${product.name} | ${product.price || 'no price'} | SKU: ${product.sku || 'none'}`);
+      const colorInfo = extractVariantInfo(product.name);
+      const title = colorInfo ? colorInfo.baseName : product.name;
+      if (colorInfo) {
+        console.log(`  [simple]   ${title} | Color: ${colorInfo.variantValue} | ${product.price || 'no price'} | SKU: ${product.sku || 'none'}`);
+      } else {
+        console.log(`  [simple]   ${title} | ${product.price || 'no price'} | SKU: ${product.sku || 'none'}`);
+      }
       writer.write(buildProductRow(product, null, true));
       rowCount++;
     }
