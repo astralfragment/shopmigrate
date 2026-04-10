@@ -1,0 +1,25 @@
+{
+  "name": "shopmigrate",
+  "version": "1.0.0",
+  "description": "CLI tool to export WooCommerce products into a Shopify-compatible CSV",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node index.js --dry-run"
+  },
+  "keywords": [
+    "woocommerce",
+    "shopify",
+    "migration",
+    "csv",
+    "ecommerce"
+  ],
+  "author": "astralfragment",
+  "license": "MIT",
+  "dependencies": {
+    "csv-write-stream": "^2.0.0",
+    "dotenv": "^17.4.1",
+    "node-fetch": "^3.3.2"
+  }
+}
