@@ -303,7 +303,7 @@ async function main() {
     }
 
     // Show unmapped categories
-    const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => !categoryMap[c]);
+    const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !(c in categoryMap));
     if (unmapped.length) {
       console.log(`\nUnmapped categories (add to ${CATEGORY_MAP_FILE}):`);
       unmapped.forEach(c => console.log(`  "${c}": ""`));
@@ -349,7 +349,7 @@ async function main() {
   }
 
   // Warn about unmapped categories
-  const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !categoryMap[c]);
+  const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !(c in categoryMap));
   if (unmapped.length) {
     console.log(`\nWarning: ${unmapped.length} categories not mapped to Shopify taxonomy.`);
     console.log(`Add them to ${CATEGORY_MAP_FILE} to set Product Category. Run with --dry-run to see the list.`);
