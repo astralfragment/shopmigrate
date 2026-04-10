@@ -417,6 +417,11 @@ async function downloadProductImages(products) {
 
 // --- CSV mapping ---
 
+function cleanTitle(name) {
+  const info = extractVariantInfo(name);
+  return info ? info.baseName : name;
+}
+
 function makeHandle(name) {
   return name?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || '';
 }
@@ -428,14 +433,15 @@ function emptyRow() {
 }
 
 function buildProductRow(product, variant, isFirstRow) {
-  const handle = makeHandle(product.name);
+  const handle = makeHandle(cleanTitle(product.name) || product.name);
   const category = product.categories?.[0]?.name || '';
 
   const row = emptyRow();
   row['Handle'] = handle;
 
   if (isFirstRow) {
-    row['Title'] = product.name || '';
+    const title = cleanTitle(product.name) || product.name || '';
+    row['Title'] = title;
     row['Body (HTML)'] = product.description || '';
     row['Vendor'] = mapBrand(product.name);
     row['Product Category'] = mapCategory(category);
@@ -443,7 +449,7 @@ function buildProductRow(product, variant, isFirstRow) {
     row['Tags'] = (product.tags || []).map(t => t.name).join(', ');
     row['Published'] = product.status === 'publish' ? 'TRUE' : 'FALSE';
     row['Gift Card'] = 'FALSE';
-    row['SEO Title'] = product.name || '';
+    row['SEO Title'] = title;
     row['SEO Description'] = product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
     row['Status'] = product.status === 'publish' ? 'active' : 'draft';
     row['Collection'] = mapCollection(category);
@@ -472,6 +478,13 @@ function buildProductRow(product, variant, isFirstRow) {
       row['Variant Image'] = variant.image.src;
     }
   } else {
+    // Detect color in name and set as variant option
+    const colorInfo = extractVariantInfo(product.name);
+    if (colorInfo) {
+      row['Option1 Name'] = 'Color';
+      row['Option1 Value'] = colorInfo.variantValue;
+    }
+
     const inv = inventoryFields(product);
     row['Variant SKU'] = product.sku || '';
     row['Variant Grams'] = product.weight ? Math.round(parseFloat(product.weight) * 1000) : '';
