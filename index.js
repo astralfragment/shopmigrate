@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import csvWriter from 'csv-write-stream';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 
 // --- Config ---
 
@@ -28,23 +29,47 @@ const args = process.argv.slice(2);
 const isDryRun = args.includes('--dry-run');
 const shouldDownloadImages = args.includes('--images');
 const smartVariants = args.includes('--smart-variants');
+const isInit = args.includes('--init');
 const storeBase = WC_STORE_URL.replace(/\/+$/, '');
 const apiBase = storeBase + '/wp-json/wc/v3';
 const perPage = 100;
 
-// --- Category mapping ---
+// --- Mapping files ---
 
-let categoryMap = {};
 const CATEGORY_MAP_FILE = 'categories.json';
+const BRANDS_MAP_FILE = 'brands.json';
+const COLLECTIONS_MAP_FILE = 'collections.json';
 
-if (fs.existsSync(CATEGORY_MAP_FILE)) {
-  categoryMap = JSON.parse(fs.readFileSync(CATEGORY_MAP_FILE, 'utf-8'));
-  console.log(`Loaded ${Object.keys(categoryMap).length} category mappings from ${CATEGORY_MAP_FILE}`);
+function loadJsonFile(filepath) {
+  if (fs.existsSync(filepath)) {
+    return JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+  }
+  return {};
 }
+
+let categoryMap = loadJsonFile(CATEGORY_MAP_FILE);
+let brandsMap = loadJsonFile(BRANDS_MAP_FILE);
+let collectionsMap = loadJsonFile(COLLECTIONS_MAP_FILE);
 
 function mapCategory(wcCategoryName) {
   if (!wcCategoryName) return '';
   return categoryMap[wcCategoryName] || '';
+}
+
+function mapBrand(productName) {
+  // Check brands.json for a matching prefix
+  for (const [prefix, shopifyVendor] of Object.entries(brandsMap)) {
+    if (productName.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return shopifyVendor;
+    }
+  }
+  return SHOPIFY_VENDOR;
+}
+
+function mapCollection(wcCategoryName) {
+  if (!wcCategoryName) return '';
+  if (wcCategoryName in collectionsMap) return collectionsMap[wcCategoryName];
+  return wcCategoryName;
 }
 
 // --- Shopify CSV headers ---
@@ -119,6 +144,24 @@ async function fetchVariations(productId) {
   return variations;
 }
 
+// --- Inventory helpers ---
+
+function inventoryFields(item) {
+  if (item.manage_stock) {
+    return {
+      tracker: 'shopify',
+      qty: item.stock_quantity ?? 0,
+      policy: item.backorders === 'no' ? 'deny' : 'continue',
+    };
+  }
+  // Not tracking stock — leave tracker empty so Shopify doesn't show 0
+  return {
+    tracker: '',
+    qty: '',
+    policy: item.stock_status === 'instock' ? 'deny' : 'deny',
+  };
+}
+
 // --- Smart variant grouping ---
 
 const COLOR_WORDS = new Set([
@@ -132,8 +175,6 @@ const COLOR_WORDS = new Set([
 ]);
 
 function extractVariantInfo(name) {
-  // Try parenthesized color: "Product Name (White) (Pair)" or "Product Name (Gloss Black)(pair)"
-  // Match a parenthesized group whose content is a known color, ignoring case
   const parenRegex = /\(([^)]+)\)/g;
   let match;
   let colorMatch = null;
@@ -155,14 +196,12 @@ function extractVariantInfo(name) {
     return { baseName, variantValue: colorMatch };
   }
 
-  // Try trailing color word: "Product Name White"
   const words = name.split(/\s+/);
   if (words.length >= 2) {
     const lastWord = words[words.length - 1];
     if (COLOR_WORDS.has(lastWord.toLowerCase())) {
       return { baseName: words.slice(0, -1).join(' '), variantValue: lastWord };
     }
-    // Try last two words: "Gloss Black"
     if (words.length >= 3) {
       const lastTwo = words.slice(-2).join(' ');
       if (COLOR_WORDS.has(lastTwo.toLowerCase())) {
@@ -196,7 +235,6 @@ function groupSmartVariants(products) {
     }
   }
 
-  // Only keep groups with 2+ products — singles go back to ungrouped
   const mergedGroups = [];
   for (const [, group] of groups) {
     if (group.products.length >= 2) {
@@ -207,6 +245,126 @@ function groupSmartVariants(products) {
   }
 
   return { mergedGroups, ungrouped };
+}
+
+// --- Brand detection ---
+
+const KNOWN_MULTI_WORD_BRANDS = [
+  'Monitor Audio', 'Polk Audio', 'B+W',
+];
+
+function detectBrand(productName) {
+  // Check multi-word brands first
+  for (const brand of KNOWN_MULTI_WORD_BRANDS) {
+    if (productName.startsWith(brand)) return brand;
+  }
+  // Fall back to first word
+  return productName.split(/\s+/)[0] || '';
+}
+
+function detectAllBrands(products) {
+  const brandCounts = {};
+  for (const p of products) {
+    const brand = detectBrand(p.name);
+    if (!brandCounts[brand]) brandCounts[brand] = 0;
+    brandCounts[brand]++;
+  }
+  return Object.entries(brandCounts)
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1]);
+}
+
+// --- Interactive init ---
+
+function createInterface() {
+  return readline.createInterface({ input: process.stdin, output: process.stdout });
+}
+
+function ask(rl, question) {
+  return new Promise(resolve => rl.question(question, resolve));
+}
+
+async function runInit() {
+  console.log('\nShopMigrate - Interactive Setup');
+  console.log(`Store: ${WC_STORE_URL}\n`);
+
+  console.log('Fetching products...');
+  const products = await fetchAllProducts();
+  console.log(`Found ${products.length} products\n`);
+
+  if (products.length === 0) return;
+
+  const rl = createInterface();
+
+  // --- Brand mapping ---
+  console.log('=== Brand / Vendor Mapping ===\n');
+  const detectedBrands = detectAllBrands(products);
+  console.log(`Detected ${detectedBrands.length} brands from product names:\n`);
+
+  const existingBrands = loadJsonFile(BRANDS_MAP_FILE);
+  const newBrands = {};
+
+  for (const [brand, count] of detectedBrands) {
+    const existing = existingBrands[brand];
+    if (existing) {
+      console.log(`  ${brand} (${count} products) -> "${existing}" [already mapped]`);
+      newBrands[brand] = existing;
+      continue;
+    }
+    const answer = await ask(rl, `  ${brand} (${count} products) — Shopify vendor name [${brand}]: `);
+    newBrands[brand] = answer.trim() || brand;
+  }
+
+  fs.writeFileSync(BRANDS_MAP_FILE, JSON.stringify(newBrands, null, 2) + '\n');
+  console.log(`\nSaved ${Object.keys(newBrands).length} brands to ${BRANDS_MAP_FILE}\n`);
+
+  // --- Collection mapping ---
+  console.log('=== Collection Mapping ===\n');
+  const allCategories = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].sort();
+  console.log(`Found ${allCategories.length} WooCommerce categories:\n`);
+
+  const existingCollections = loadJsonFile(COLLECTIONS_MAP_FILE);
+  const newCollections = {};
+
+  for (const cat of allCategories) {
+    const existing = existingCollections[cat];
+    if (existing !== undefined) {
+      console.log(`  "${cat}" -> "${existing}" [already mapped]`);
+      newCollections[cat] = existing;
+      continue;
+    }
+    const answer = await ask(rl, `  "${cat}" — Shopify collection name [${cat}]: `);
+    newCollections[cat] = answer.trim() || cat;
+  }
+
+  fs.writeFileSync(COLLECTIONS_MAP_FILE, JSON.stringify(newCollections, null, 2) + '\n');
+  console.log(`\nSaved ${Object.keys(newCollections).length} collections to ${COLLECTIONS_MAP_FILE}\n`);
+
+  // --- Category taxonomy check ---
+  const unmappedCats = allCategories.filter(c => c && !(c in categoryMap));
+  if (unmappedCats.length > 0) {
+    console.log(`Note: ${unmappedCats.length} categories not yet mapped to Shopify taxonomy in ${CATEGORY_MAP_FILE}:`);
+    unmappedCats.forEach(c => console.log(`  "${c}"`));
+    console.log(`\nEdit ${CATEGORY_MAP_FILE} to add valid Shopify Product Taxonomy values.`);
+    console.log('Browse: https://shopify.github.io/product-taxonomy/\n');
+  }
+
+  // --- Summary ---
+  const smartResult = groupSmartVariants(products);
+  if (smartResult.mergedGroups.length > 0) {
+    console.log(`Tip: ${smartResult.mergedGroups.length} products can be auto-grouped with --smart-variants:`);
+    for (const g of smartResult.mergedGroups) {
+      console.log(`  ${g.baseName} (${g.products.length} color variants)`);
+    }
+    console.log('');
+  }
+
+  console.log('Setup complete. Run your export:');
+  console.log('  npm start                         # basic export');
+  console.log('  npm run smart                     # with smart variant grouping');
+  console.log('  node index.js --smart-variants --images  # full export with images\n');
+
+  rl.close();
 }
 
 // --- Image downloading ---
@@ -276,11 +434,10 @@ function buildProductRow(product, variant, isFirstRow) {
   const row = emptyRow();
   row['Handle'] = handle;
 
-  // Product-level fields only on the first row
   if (isFirstRow) {
     row['Title'] = product.name || '';
     row['Body (HTML)'] = product.description || '';
-    row['Vendor'] = SHOPIFY_VENDOR;
+    row['Vendor'] = mapBrand(product.name);
     row['Product Category'] = mapCategory(category);
     row['Type'] = category;
     row['Tags'] = (product.tags || []).map(t => t.name).join(', ');
@@ -289,22 +446,21 @@ function buildProductRow(product, variant, isFirstRow) {
     row['SEO Title'] = product.name || '';
     row['SEO Description'] = product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
     row['Status'] = product.status === 'publish' ? 'active' : 'draft';
-    row['Collection'] = category;
+    row['Collection'] = mapCollection(category);
   }
 
-  // Variant-level fields
   if (variant) {
-    // Map WooCommerce attributes to Shopify Option columns
     const attrs = variant.attributes || [];
     if (attrs[0]) { row['Option1 Name'] = attrs[0].name || ''; row['Option1 Value'] = attrs[0].option || ''; }
     if (attrs[1]) { row['Option2 Name'] = attrs[1].name || ''; row['Option2 Value'] = attrs[1].option || ''; }
     if (attrs[2]) { row['Option3 Name'] = attrs[2].name || ''; row['Option3 Value'] = attrs[2].option || ''; }
 
+    const inv = inventoryFields(variant);
     row['Variant SKU'] = variant.sku || '';
     row['Variant Grams'] = variant.weight ? Math.round(parseFloat(variant.weight) * 1000) : '';
-    row['Variant Inventory Tracker'] = 'shopify';
-    row['Variant Inventory Qty'] = variant.stock_quantity ?? '';
-    row['Variant Inventory Policy'] = variant.backorders === 'no' ? 'deny' : 'continue';
+    row['Variant Inventory Tracker'] = inv.tracker;
+    row['Variant Inventory Qty'] = inv.qty;
+    row['Variant Inventory Policy'] = inv.policy;
     row['Variant Fulfillment Service'] = 'manual';
     row['Variant Price'] = variant.price || '';
     row['Variant Compare At Price'] = (variant.regular_price && variant.sale_price && variant.regular_price !== variant.sale_price) ? variant.regular_price : '';
@@ -312,17 +468,16 @@ function buildProductRow(product, variant, isFirstRow) {
     row['Variant Taxable'] = variant.tax_status === 'taxable' ? 'TRUE' : 'FALSE';
     row['Variant Weight Unit'] = variant.weight ? 'g' : '';
 
-    // Variant image
     if (variant.image?.src) {
       row['Variant Image'] = variant.image.src;
     }
   } else {
-    // Simple product — variant fields come from the product itself
+    const inv = inventoryFields(product);
     row['Variant SKU'] = product.sku || '';
     row['Variant Grams'] = product.weight ? Math.round(parseFloat(product.weight) * 1000) : '';
-    row['Variant Inventory Tracker'] = 'shopify';
-    row['Variant Inventory Qty'] = product.stock_quantity ?? '';
-    row['Variant Inventory Policy'] = product.backorders === 'no' ? 'deny' : 'continue';
+    row['Variant Inventory Tracker'] = inv.tracker;
+    row['Variant Inventory Qty'] = inv.qty;
+    row['Variant Inventory Policy'] = inv.policy;
     row['Variant Fulfillment Service'] = 'manual';
     row['Variant Price'] = product.price || '';
     row['Variant Compare At Price'] = (product.regular_price && product.sale_price && product.regular_price !== product.sale_price) ? product.regular_price : '';
@@ -331,7 +486,6 @@ function buildProductRow(product, variant, isFirstRow) {
     row['Variant Weight Unit'] = product.weight ? 'g' : '';
   }
 
-  // First image on the first row
   if (isFirstRow && product.images?.[0]) {
     row['Image Src'] = product.images[0].src;
     row['Image Position'] = '1';
@@ -349,17 +503,14 @@ function buildSmartVariantRow(group, memberProduct, variantValue, isFirstRow) {
   row['Handle'] = handle;
 
   if (isFirstRow) {
-    // Use group base name as the product title
     row['Title'] = group.baseName;
-    // Pick the longest description from all members
     const best = group.products.reduce((a, b) =>
       (b.product.description || '').length > (a.product.description || '').length ? b : a
     );
     row['Body (HTML)'] = best.product.description || '';
-    row['Vendor'] = SHOPIFY_VENDOR;
+    row['Vendor'] = mapBrand(group.baseName);
     row['Product Category'] = mapCategory(category);
     row['Type'] = category;
-    // Merge tags from all members
     const allTags = [...new Set(group.products.flatMap(m => (m.product.tags || []).map(t => t.name)))];
     row['Tags'] = allTags.join(', ');
     row['Published'] = group.products.some(m => m.product.status === 'publish') ? 'TRUE' : 'FALSE';
@@ -370,17 +521,18 @@ function buildSmartVariantRow(group, memberProduct, variantValue, isFirstRow) {
     );
     row['SEO Description'] = bestShort.product.short_description?.replace(/<[^>]*>/g, '').slice(0, 320) || '';
     row['Status'] = group.products.some(m => m.product.status === 'publish') ? 'active' : 'draft';
-    row['Collection'] = category;
+    row['Collection'] = mapCollection(category);
   }
 
-  // Variant fields
   row['Option1 Name'] = 'Color';
   row['Option1 Value'] = variantValue;
+
+  const inv = inventoryFields(memberProduct);
   row['Variant SKU'] = memberProduct.sku || '';
   row['Variant Grams'] = memberProduct.weight ? Math.round(parseFloat(memberProduct.weight) * 1000) : '';
-  row['Variant Inventory Tracker'] = 'shopify';
-  row['Variant Inventory Qty'] = memberProduct.stock_quantity ?? '';
-  row['Variant Inventory Policy'] = memberProduct.backorders === 'no' ? 'deny' : 'continue';
+  row['Variant Inventory Tracker'] = inv.tracker;
+  row['Variant Inventory Qty'] = inv.qty;
+  row['Variant Inventory Policy'] = inv.policy;
   row['Variant Fulfillment Service'] = 'manual';
   row['Variant Price'] = memberProduct.price || '';
   row['Variant Compare At Price'] = (memberProduct.regular_price && memberProduct.sale_price && memberProduct.regular_price !== memberProduct.sale_price) ? memberProduct.regular_price : '';
@@ -388,12 +540,10 @@ function buildSmartVariantRow(group, memberProduct, variantValue, isFirstRow) {
   row['Variant Taxable'] = memberProduct.tax_status === 'taxable' ? 'TRUE' : 'FALSE';
   row['Variant Weight Unit'] = memberProduct.weight ? 'g' : '';
 
-  // Variant image — use the member product's first image
   if (memberProduct.images?.[0]?.src) {
     row['Variant Image'] = memberProduct.images[0].src;
   }
 
-  // First image on first row
   if (isFirstRow && memberProduct.images?.[0]) {
     row['Image Src'] = memberProduct.images[0].src;
     row['Image Position'] = '1';
@@ -417,14 +567,25 @@ function writeImageRows(writer, handle, images) {
 // --- Main ---
 
 async function main() {
+  // Interactive init mode
+  if (isInit) {
+    await runInit();
+    return;
+  }
+
+  const mappingStatus = [];
+  if (Object.keys(categoryMap).length) mappingStatus.push(`${Object.keys(categoryMap).length} categories`);
+  if (Object.keys(brandsMap).length) mappingStatus.push(`${Object.keys(brandsMap).length} brands`);
+  if (Object.keys(collectionsMap).length) mappingStatus.push(`${Object.keys(collectionsMap).length} collections`);
+
   console.log(`\nShopMigrate - WooCommerce to Shopify`);
   console.log(`Store:  ${WC_STORE_URL}`);
   console.log(`Output: ${OUTPUT_FILE}`);
+  if (mappingStatus.length) console.log(`Maps:   ${mappingStatus.join(', ')}`);
   if (smartVariants) console.log(`Mode:   Smart variant grouping enabled`);
   if (shouldDownloadImages) console.log(`Images: ./${IMAGE_DIR}/`);
   console.log('');
 
-  // Fetch all products
   console.log('Fetching products...');
   const products = await fetchAllProducts();
   console.log(`Found ${products.length} products\n`);
@@ -478,13 +639,21 @@ async function main() {
       console.log(`  Smart-grouped: ${mergedGroups.length} products (${smartGrouped} merged simple products)`);
       console.log(`  Remaining simple: ${processProducts.filter(p => p.type === 'simple').length}`);
     }
+
+    // Stock stats
+    const managed = products.filter(p => p.manage_stock).length;
+    const unmanaged = products.length - managed;
+    console.log(`  Inventory tracked: ${managed}, untracked: ${unmanaged}`);
     console.log('No files written.\n');
 
-    // Show unmapped categories
     const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !(c in categoryMap));
     if (unmapped.length) {
       console.log(`Unmapped categories (add to ${CATEGORY_MAP_FILE}):`);
       unmapped.forEach(c => console.log(`  "${c}": ""`));
+    }
+
+    if (!Object.keys(brandsMap).length) {
+      console.log(`\nTip: Run "npm run init" to set up brand and collection mappings.`);
     }
     return;
   }
@@ -512,7 +681,6 @@ async function main() {
       rowCount++;
     });
 
-    // Collect all unique images across group members for additional image rows
     const allImages = [];
     const seenUrls = new Set();
     for (const member of group.products) {
@@ -563,13 +731,11 @@ async function main() {
   console.log(`  Simple:   ${simpleCount}`);
   console.log(`  Variable: ${variableCount} (${variantCount} WC variants)`);
 
-  // Download images
   if (shouldDownloadImages) {
     console.log('\nDownloading images...');
     await downloadProductImages(products);
   }
 
-  // Warn about unmapped categories
   const unmapped = [...new Set(products.flatMap(p => (p.categories || []).map(c => c.name)))].filter(c => c && !(c in categoryMap));
   if (unmapped.length) {
     console.log(`\nWarning: ${unmapped.length} categories not mapped to Shopify taxonomy.`);

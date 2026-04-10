@@ -1,17 +1,18 @@
 # ShopMigrate
 
-CLI tool that exports products from a WooCommerce store into a Shopify-compatible CSV, with smart variant grouping, image downloads, and category mapping.
+CLI tool that exports products from a WooCommerce store into a Shopify-compatible CSV, with smart variant grouping, brand/collection mapping, image downloads, and proper inventory handling.
 
 ## Features
 
 - Fetches all products via WooCommerce REST API with automatic pagination
-- Fetches and maps **WooCommerce variable product variants** to Shopify's Option/Variant columns
-- **Smart variant grouping** (`--smart-variants`) — detects simple products that are actually color/finish variants of the same product and merges them into a single Shopify product with variants
-- Maps WooCommerce categories to **valid Shopify Product Taxonomy** values via `categories.json`
-- Handles **multiple product images** (additional images become separate CSV rows per Shopify spec)
-- **Downloads all product images** locally with `--images` flag
-- Exports inventory, pricing, compare-at prices, SEO, tags, and publish status
-- **Dry run** mode to preview without writing files
+- **Smart variant grouping** — detects simple products that are color/finish variants and merges them
+- **Interactive setup** (`--init`) — scans your store and walks you through mapping brands and collections
+- **Brand detection** — auto-detects vendor names from product titles via `brands.json`
+- **Collection mapping** — maps WooCommerce categories to Shopify collections via `collections.json`
+- **Category taxonomy mapping** — maps to valid Shopify Product Taxonomy values via `categories.json`
+- **Proper inventory** — respects WooCommerce `manage_stock` flag; untracked products won't show as "0 stock" in Shopify
+- Handles multiple product images and WooCommerce variable product variants
+- Downloads all product images locally with `--images`
 
 ## Setup
 
@@ -35,75 +36,109 @@ IMAGE_DIR=images
 
 Generate WooCommerce API keys at **WP Admin > WooCommerce > Settings > Advanced > REST API** (read-only access is fine).
 
-## Usage
+## Quick Start
+
+Run the interactive setup first — it scans your products and lets you map brands and collections:
 
 ```bash
-# Basic export
-npm start
-
-# Smart variant grouping (recommended)
-npm run smart
-
-# Preview smart grouping without writing files
-npm run smart:dry
-
-# Dry run
-npm run dry-run
-
-# Export + download all product images
-npm run images
-
-# Combine flags
-node index.js --smart-variants --images
+npm run init
 ```
 
-## Smart Variant Grouping
+This creates:
+- **`brands.json`** — maps product name prefixes to Shopify vendor names
+- **`collections.json`** — maps WooCommerce categories to Shopify collection names
 
-Many WooCommerce stores list color/finish variants as separate simple products:
+Then export:
 
-```
-B+W 607 S3 Bookshelf (White) (Pair)   → simple product
-B+W 607 S3 Bookshelf (Oak) (Pair)     → simple product
-B+W 607 S3 Bookshelf (Black) (Pair)   → simple product
-```
-
-With `--smart-variants`, these get merged into **one Shopify product** with 3 color variants:
-
-```
-B+W 607 S3 Bookshelf (Pair)
-  ├── White  | SKU: FP43966pr
-  ├── Oak    | SKU: FP43974pr
-  └── Black  | SKU: FP43958pr
+```bash
+npm run smart          # export with smart variant grouping (recommended)
+npm run smart:dry      # preview without writing files
+npm start              # basic export without smart grouping
+npm run images         # export + download all images
+node index.js --smart-variants --images  # combine flags
 ```
 
-It detects colors in parentheses like `(White)` or as trailing words like `Floorstander Oak`. Only groups with 2+ matching products are merged — single products are left as-is.
+## How It Works
 
-Run `npm run smart:dry` first to preview what will be grouped before exporting.
+### Brand Detection
 
-## Category Mapping
+Products are scanned for brand prefixes in their names:
 
-WooCommerce categories don't match Shopify's product taxonomy. Edit `categories.json` to map your store's categories to exact Shopify taxonomy strings:
+```
+"SONOS Era 100 Smart Speaker"    → Vendor: Sonos
+"B+W 607 S3 Bookshelf (Pair)"   → Vendor: Bowers & Wilkins
+"Monitor Audio A10 Speaker"      → Vendor: Monitor Audio
+```
+
+During `--init`, you confirm or rename each detected brand. The mapping is saved to `brands.json`:
+
+```json
+{
+  "SONOS": "Sonos",
+  "B+W": "Bowers & Wilkins",
+  "Monitor Audio": "Monitor Audio",
+  "Denon": "Denon"
+}
+```
+
+### Smart Variant Grouping
+
+WooCommerce stores often list color variants as separate simple products:
+
+```
+B+W 607 S3 Bookshelf (White) (Pair)  → separate product
+B+W 607 S3 Bookshelf (Oak) (Pair)    → separate product
+B+W 607 S3 Bookshelf (Black) (Pair)  → separate product
+```
+
+With `--smart-variants`, these become **one Shopify product** with 3 color variants. Only groups with 2+ matching products are merged.
+
+### Inventory Tracking
+
+- **`manage_stock: true`** → Shopify tracks inventory with the WooCommerce stock quantity
+- **`manage_stock: false`** → inventory tracking is disabled in Shopify (no misleading "0 stock")
+
+### Collection Mapping
+
+`collections.json` maps WooCommerce categories to Shopify collection names:
+
+```json
+{
+  "Audio": "Audio & Speakers",
+  "Audio/Video": "Home Theater",
+  "Black Friday Specials": "",
+  "test": ""
+}
+```
+
+Set to `""` to exclude from collections.
+
+### Category Taxonomy
+
+`categories.json` maps to Shopify's official product taxonomy (separate from collections):
 
 ```json
 {
   "Audio": "Electronics > Audio",
   "Speakers": "Electronics > Audio > Audio Components > Speakers",
-  "Security": "Home & Garden > Business & Home Security",
-  "Uncategorized": ""
+  "Security": "Home & Garden > Business & Home Security"
 }
 ```
 
-Set a category to `""` to intentionally leave it unmapped. Run `npm run dry-run` to see categories that are missing from the file entirely. Browse valid values at [shopify.github.io/product-taxonomy](https://shopify.github.io/product-taxonomy/).
+Browse valid values at [shopify.github.io/product-taxonomy](https://shopify.github.io/product-taxonomy/).
 
-## How Variants Work in the CSV
+## All Commands
 
-| Row | What it contains |
-|-----|-----------------|
-| 1st | Full product info (title, description, tags, etc.) + first variant's options/price/SKU |
-| 2nd+ | Handle + each additional variant's options, price, SKU, inventory, variant image |
-| Extra | Additional product images (one row per image) |
+| Command | Description |
+|---------|-------------|
+| `npm run init` | Interactive setup — map brands and collections |
+| `npm start` | Export products to CSV |
+| `npm run smart` | Export with smart variant grouping |
+| `npm run smart:dry` | Preview smart grouping (no files written) |
+| `npm run dry-run` | Preview export (no files written) |
+| `npm run images` | Export + download all product images |
 
-This applies to both WooCommerce variable products and smart-grouped products.
+Flags can be combined: `node index.js --smart-variants --images --dry-run`
 
 ## Importing into Shopify
 
@@ -111,8 +146,6 @@ This applies to both WooCommerce variable products and smart-grouped products.
 2. Upload `products_shopify.csv`
 3. Review the column mapping preview
 4. Click **Import products**
-
-The CSV references original WooCommerce image URLs — Shopify downloads them during import.
 
 ## Requirements
 

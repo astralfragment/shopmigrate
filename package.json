@@ -9,7 +9,8 @@
     "dry-run": "node index.js --dry-run",
     "images": "node index.js --images",
     "smart": "node index.js --smart-variants",
-    "smart:dry": "node index.js --smart-variants --dry-run"
+    "smart:dry": "node index.js --smart-variants --dry-run",
+    "init": "node index.js --init"
   },
   "keywords": [
     "woocommerce",
